@@ -3,7 +3,7 @@ use proc_macro2;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput, Type, TypePath};
 
-#[proc_macro_derive(Builder)]
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -15,6 +15,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let mut fields_def = Vec::new();
     let mut build_def = Vec::new();
 
+    // let meta_lll = Vec::new();
+
     if let syn::Data::Struct(data) = &input.data {
         if let syn::Fields::Named(fields) = &data.fields {
             for field in fields.named.iter() {
@@ -24,26 +26,57 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 if let Some(ty) = extract_type_from_option(&field_ty) {
                     field_funcs.push(quote! {
                         #vis fn #field_name(&mut self, input: #ty) -> &mut Self {
+                            self.#field_name = Some(Some(input));
+                            self
+                        }
+                    });
+
+                    build_def.push(quote! {
+                        #field_name: self.#field_name.clone().unwrap_or(None),
+                    })
+                } else {
+                    field_funcs.push(quote! {
+                        #vis fn #field_name(&mut self, input: #field_ty) -> &mut Self {
                             self.#field_name = Some(input);
                             self
                         }
                     });
-                } else {
-                    field_funcs.push(quote! {
-                        #vis fn #field_name(&mut self, input: #field_ty) -> &mut Self {
-                            self.#field_name = input;
-                            self
-                        }
-                    });
+
+                    build_def.push(quote! {
+                        #field_name: self.#field_name.clone().unwrap(),
+                    })
                 }
 
                 fields_def.push(quote! {
-                    #field_name: #field_ty,
+                    #field_name: Option<#field_ty>,
                 });
 
-                build_def.push(quote! {
-                    #field_name: self.#field_name.clone(),
-                })
+                for attr in field.attrs.iter() {
+                    if attr.path().is_ident("builder") {
+                        let _ = attr.parse_nested_meta(|meta| {
+                            if meta.path.is_ident("each") {
+                                let value = meta.value()?;
+                                let s: syn::LitStr = value.parse()?;
+                                let each_name = s.value();
+                                let each_name_ident = syn::Ident::new(&each_name, proc_macro2::Span::call_site());
+                                let q = quote! {
+                                    #vis fn #each_name_ident(&mut self, input: #field_ty) -> &mut Self {
+                                        if let None = self.#field_name {
+                                            self.#field_name = Some(#field_ty);
+                                        }
+                                        self.#field_name.push(input);
+                                        self
+                                    }
+                                };
+                                println!("{:#?}", q.to_string());
+                                field_funcs.push(q);
+                                Ok(())
+                            } else {
+                                Err(meta.error("unsupported attribute"))
+                            }
+                        });
+                    }
+                }
             }
         } else {
             panic!("Not implemented for unnamed fields")
